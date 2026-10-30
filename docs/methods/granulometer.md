@@ -72,22 +72,22 @@ The function handles three plot modes: "q", "passant", and "both" (or "combined"
 
 The runner.py orchestrates the creation of the following output tree:
 
-outputs/YYYY_MM_DD_<batch>/
-├── _run_info.json                # Config snapshot & timestamp
+outputs/YYYY_MM_DD_[batch]/
+├── _run_info.json # Config snapshot & timestamp
 ├── summary/
-│   ├── measurement_summary.csv   # Per-measurement stats
-│   └── condition_summary.csv     # Per-condition mean ± SD, D50 CV%
+│ ├── measurement_summary.csv # Per-measurement stats
+│ └── condition_summary.csv # Per-condition mean ± SD, D50 CV%
 ├── individual/
-│   └── <condition>/              # One folder per condition
-│       └── <measurement>_combined.png
+│ └── [condition]/ # One folder per condition
+│ └── [measurement]_combined.png
 ├── replicates/
-│   └── <condition>_combined.png  # a/b/c overlaid with SD band
+│ └── [condition]_combined.png # a/b/c overlaid with SD band
 ├── comparisons/
-│   ├── by_time/                  # 30s vs 60s at fixed sample+volume
-│   ├── by_volume/                # 1.5mL vs 3mL at fixed sample+time
-│   └── by_sample/                # Sample A vs B at fixed volume+time
+│ ├── by_time/ # 30s vs 60s at fixed sample+volume
+│ ├── by_volume/ # 1.5mL vs 3mL at fixed sample+time
+│ └── by_sample/ # Sample A vs B at fixed volume+time
 └── overview/
-    └── all_conditions.png        # Small multiples (q only)
+└── all_conditions.png # Small multiples (q only)
 
 ## 5. Common Pitfalls & Maintenance Notes
 
