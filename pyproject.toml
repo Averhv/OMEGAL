@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lab-analysis"
+version = "2.1.0"
+description = "Granulometer (laser-diffraction) + UV-Vis data processing toolkit"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20",
+    "matplotlib>=3.5",
+    "openpyxl>=3.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+granulometer-analysis = "lab_analysis.granulometer.__main__:main"
+uvvis-analysis        = "lab_analysis.uvvis.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["lab_analysis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
