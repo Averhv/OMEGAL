@@ -64,7 +64,7 @@ def first_number(text: str) -> Optional[float]:
 
 # --- Metadata block ----------------------------------------------------------
 def split_label_value(line: str) -> tuple[str, str]:
-    s = line.strip().strip('"\'')            # ← NEW: strip surrounding quotes
+    s = line.strip().strip('"\'')            
     parts = re.split(r"\t+|\s{2,}|\s*:\s*", s, maxsplit=1)
     if len(parts) == 2:
         return parts[0], parts[1]
@@ -97,12 +97,29 @@ def parse_metadata(lines: list[str]) -> dict:
 
 
 # --- Name parsing ------------------------------------------------------------
-def split_replicate(name: str) -> tuple[str, str]:
-    """`SF_1.5mL_30s_2` -> (`SF_1.5mL_30s`, `2`); `..._a` -> (..., `a`)."""
-    m = REPLICATE_SUFFIX_RE.search(name)
-    if m:
-        return name[:m.start()].rstrip(" _-"), m.group(1).lower()
-    return name, ""
+def split_replicate(name: str) -> tuple[str, str, str]:
+    """
+    Extrait le nom de base, le réplicat et le type de base (basis: volume, surface, longueur, nombre).
+    Exemple: 'SF_1week_3mL_5W_60s_3_surface.txt' -> ('SF_1week_3mL_5W_60s', '3', 'surface')
+    """
+    stem = Path(name).stem
+    
+    # 1. Détecter le type de distribution (basis) à la fin du nom
+    basis = "volume"
+    for b in ["surface", "longueur", "nombre"]:
+        if stem.endswith(f"_{b}"):
+            basis = b
+            stem = stem[:-len(b)].rstrip("-_")
+            break
+            
+    # 2. Extraire le réplicat (chiffre ou lettre de fin, ex: _1, _2, _3) même s'il y a un suffixe
+    match = re.search(r"[-_](?:rep)?([0-9]+|[a-zA-Z])$", stem)
+    if match:
+        rep = match.group(1)
+        base = stem[:match.start()]
+        return base.strip("-_"), rep, basis
+        
+    return stem, "", basis
 
 
 def parse_condition(group: str) -> tuple[str, Optional[float], Optional[float]]:
@@ -155,8 +172,13 @@ def parse_txt(path: Path) -> Measurement:
             d.append(values[0]); q.append(values[1]); p.append(values[2])
         elif d:
             break
+            
+    stats = parse_metadata(lines[:start - 1])
+    base, rep, basis = split_replicate(path.name)
+    stats["basis"] = stats.get("basis") or basis
+
     return build_measurement(
-        path.stem, str(path), d, q, p, parse_metadata(lines[:start - 1])
+        path.stem, str(path), d, q, p, stats
     )
 
 
@@ -192,6 +214,8 @@ def parse_xlsx(path: Path) -> list[Measurement]:
                     meta.append(f"{label}\t{'' if value is None else value}")
             stats = parse_metadata(meta)
             name = str(stats.get("sample_name") or f"{ws.title} col{c0}")
+            base, rep, basis = split_replicate(name)
+            stats["basis"] = stats.get("basis") or basis
             out.append(build_measurement(
                 name, f"{path.name}!{ws.title}!R{r0}C{c0}", d, q, p, stats
             ))
