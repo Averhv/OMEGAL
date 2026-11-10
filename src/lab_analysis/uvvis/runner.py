@@ -30,14 +30,15 @@ def _collect_paths(in_dir: Path) -> list[Path]:
 def organise(spectra: list[Spectrum]) -> list[Condition]:
     groups: dict[str, list[Spectrum]] = {}
     for spec in spectra:
-        base, rep = split_replicate(spec.source)
-        spec.group = base
+        sample, rep, dil = split_replicate(spec.source)
+        spec.group = sample
         spec.replicate = rep
-        spec.sample = base
-        groups.setdefault(base, []).append(spec)
+        spec.sample = sample
+        spec.dilution_factor = dil
+        groups.setdefault(sample, []).append(spec)
 
     conditions: list[Condition] = []
-    for base, members in groups.items():
+    for sample_name, members in groups.items():
         used = {m.replicate for m in members if m.replicate}
         free = iter(c for c in string.ascii_lowercase if c not in used)
         for m in members:
@@ -51,13 +52,16 @@ def organise(spectra: list[Spectrum]) -> list[Condition]:
 
         for m in members:
             if len(members) > 1:
-                m.name = f"{base} {m.replicate}"
+                # Include dilution factor F in the display name for clarity
+                m.name = f"{sample_name} (Tube {m.replicate}, F={m.dilution_factor:g})"
+            else:
+                m.name = f"{sample_name} (F={m.dilution_factor:g})"
 
         conditions.append(Condition(
-            name=base,
+            name=sample_name,
             members=members,
-            sample=base,
-            dilution_factor=config.DEFAULT_DILUTION_FACTOR,
+            sample=sample_name,
+            dilution_factor=members[0].dilution_factor if members else config.DEFAULT_DILUTION_FACTOR,
             extract_volume_ml=config.DEFAULT_EXTRACT_VOLUME_ML,
             dry_mass_mg=config.DEFAULT_DRY_MASS_MG,
         ))
@@ -106,12 +110,22 @@ def run(
 
     for i, cond in enumerate(conditions):
         family = _family_for(cond, samples, i)
+        colors = shades(family, max(len(cond.members), 1))
+        
         if config.MAKE_INDIVIDUAL:
-            colours = shades(family, max(len(cond.members), 1))
             for j, m in enumerate(cond.members):
-                plot_individual(m, colours[j], out_dir / "individual")
+                plot_individual(m, colors[j], out_dir / "individual")
+                
         if config.MAKE_REPLICATES and len(cond.members) > 1:
             plot_replicates(cond, family, out_dir / "replicates")
+
+    # Combined comparison for all samples grouped together
+    if config.MAKE_COMPARISONS and conditions:
+        comp_dir = out_dir / "comparison"
+        comp_dir.mkdir(parents=True, exist_ok=True)
+        for i, cond in enumerate(conditions):
+            family = _family_for(cond, samples, i)
+            plot_comparison((cond.name,), [cond], family, comp_dir)
 
     if config.MAKE_OVERVIEW:
         plot_overview(conditions, lambda c, i: _family_for(c, samples, i), out_dir / "overview")

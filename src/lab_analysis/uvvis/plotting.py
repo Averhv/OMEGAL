@@ -6,14 +6,19 @@ from typing import Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.transforms import ScaledTranslation
 from matplotlib.lines import Line2D
+from matplotlib.ticker import AutoMinorLocator
+from matplotlib.transforms import ScaledTranslation
 
 from . import config
 from .models import Condition, Spectrum
+from .parsing import get_meta
 from .stats import common_curves, fmt, shades, stat_values, stats_text
 from ..common.io import safe_filename
 from ..common.plotting import save_figure
+
+# Guide lines: the wavelengths of the equations of Lopez 2025 (carotenoids 470, Chl b 648, Chl a 664).
+GUIDE_WAVELENGTHS = (470, 648, 664)
 
 
 @dataclass
@@ -31,14 +36,37 @@ class Curve:
 def x_limits(curves: list[Curve]) -> tuple[float, float]:
     if config.X_LIMITS:
         return config.X_LIMITS
-    if config.X_RANGE_MODE.lower() == "full":
-        return min(c.x.min() for c in curves), max(c.x.max() for c in curves)
     lo = min(c.x.min() for c in curves)
     hi = max(c.x.max() for c in curves)
     return lo, hi
 
 
+def style_axes(ax, fontsize: float = 11, tick_size: float = 10) -> None:
+    """Clean look: no grid, no top/right frame, outward major and minor ticks."""
+    ax.grid(False)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_linewidth(1.0)
+    ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+    ax.tick_params(which="major", direction="out", length=5, width=1.0, labelsize=tick_size)
+    ax.tick_params(which="minor", direction="out", length=2.5, width=0.7)
+    ax.set_axisbelow(True)
+
+
+def draw_guides(ax) -> None:
+    """Thin dotted guide lines at the wavelengths used by the pigment equations, labelled."""
+    if not config.SHOW_WAVELENGTH_MARKERS:
+        return
+    for wl in GUIDE_WAVELENGTHS:
+        ax.axvline(x=wl, color="0.65", linestyle=":", lw=1.0, zorder=1)
+        ax.text(wl - 1.5, 0.985, f"{wl} nm", transform=ax.get_xaxis_transform(), rotation=90,
+                ha="right", va="top", fontsize=7.5, color="0.45")
+
+
 def render(curves: list[Curve], title: str, out_stem: Path, box_text: str = "") -> None:
+    # `title` is kept in the signature for the callers, but no title is drawn.
     margins = 1.2
     n_leg = max((len(c.label) for c in curves if c.label), default=0)
     n_box = max((len(t) for t in box_text.splitlines()), default=0)
@@ -58,18 +86,12 @@ def render(curves: list[Curve], title: str, out_stem: Path, box_text: str = "") 
                 color=c.color, alpha=0.16, lw=0, zorder=2,
             )
 
-    if config.SHOW_WAVELENGTH_MARKERS:
-        for wl in [470, 520, 649, 664]:
-            ax.axvline(x=wl, color="0.7", linestyle=":", lw=1.0, alpha=0.7, zorder=1)
-
-    xlims = x_limits(curves)
-    ax.set_xlim(*xlims)
-    ax.set_ylim(-0.05, None)
+    ax.set_xlim(*x_limits(curves))
+    ax.set_ylim(-0.05, None)  # automatic upper limit, as before
     ax.set_xlabel(config.X_AXIS_LABEL, fontsize=11)
     ax.set_ylabel(config.Y_AXIS_LABEL, fontsize=11)
-    if config.SHOW_GRID:
-        ax.grid(True, linestyle="--", linewidth=0.65, alpha=0.42)
-    ax.set_axisbelow(True)
+    style_axes(ax)
+    draw_guides(ax)
 
     handles = [Line2D([], [], color=c.color, lw=c.lw, label=c.label) for c in curves if c.legend and c.label]
     legend = None
@@ -94,20 +116,31 @@ def render(curves: list[Curve], title: str, out_stem: Path, box_text: str = "") 
 
 
 def legend_label(spec: Spectrum) -> str:
-    label = config.CUSTOM_LEGEND_LABELS.get(spec.name, spec.name)
-    if config.STATS_IN_LEGEND and spec.stats.get("Chl_a_ug_mL"):
-        label += f" (Chl a: {fmt(spec.stats['Chl_a_ug_mL'])} µg/mL)"
-    return label
+    """'Tube 1 (F=2)', 'Tube 1 (r=12.5, ref)', 'Tube 2 (r=5, F=2)'..."""
+    meta = get_meta(spec)
+    parts = []
+    if meta["carbon_ratio"] is not None:
+        parts.append(f"r={meta['carbon_ratio']:g}")
+    if spec.dilution_factor != 1 or meta["carbon_ratio"] is None:
+        parts.append(f"F={spec.dilution_factor:g}")
+    if meta["is_reference"]:
+        parts.append("ref")
+    base = f"Tube {spec.replicate} ({', '.join(parts)})"
+    chl_a = spec.stats.get("Chl_a_ug_mL")
+    if config.STATS_IN_LEGEND and chl_a is not None and np.isfinite(chl_a):
+        base += f" (Chl a: {fmt(chl_a)} µg/mL)"
+    return base
 
 
 def plot_individual(spec: Spectrum, shade: str, out_dir: Path) -> None:
-    folder = out_dir / safe_filename(spec.group or spec.name)
+    out_dir.mkdir(parents=True, exist_ok=True)
     curve = [Curve(spec.wavelength, spec.absorbance, legend_label(spec), shade)]
     title = config.CUSTOM_TITLES.get(spec.name, spec.name)
-    render(curve, title, folder / f"{safe_filename(spec.name)}_spectrum", stats_text([spec]))
+    render(curve, title, out_dir / f"{safe_filename(spec.source)}_spectrum", stats_text([spec]))
 
 
 def plot_replicates(cond: Condition, family: str, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
     colours = shades(family, len(cond.members))
     curves = [
         Curve(m.wavelength, m.absorbance, legend_label(m), colours[i])
@@ -117,33 +150,15 @@ def plot_replicates(cond: Condition, family: str, out_dir: Path) -> None:
 
 
 def plot_comparison(key: tuple, conds: list[Condition], family: str, out_dir: Path) -> None:
-    colours = shades(family, max(len(conds), 1))
-    curves: list[Curve] = []
-    for cond, colour in zip(conds, colours):
-        x, mean_abs, sd_abs = common_curves(cond.members)
-        multi = len(cond.members) > 1
-        label = config.CUSTOM_LEGEND_LABELS.get(cond.name) or cond.name
-        show_mean = config.COMPARE_SHOW_MEAN or not multi or not config.COMPARE_SHOW_REPLICATES
-
-        if multi and config.COMPARE_SHOW_REPLICATES:
-            for j, m in enumerate(cond.members):
-                curves.append(Curve(
-                    m.wavelength, m.absorbance,
-                    label if (not show_mean and j == 0) else "",
-                    colour,
-                    lw=0.9 if show_mean else 1.8,
-                    alpha=0.4 if show_mean else 0.9,
-                    legend=(not show_mean and j == 0),
-                ))
-        if show_mean:
-            curves.append(Curve(
-                x, mean_abs, label, colour, lw=2.6,
-                y_sd=sd_abs if multi else None,
-            ))
-
+    cond = conds[0]
+    colours = shades(family, max(len(cond.members), 1))
+    curves: list[Curve] = [
+        Curve(m.wavelength, m.absorbance, legend_label(m), colours[i], lw=1.8, alpha=0.9, legend=True)
+        for i, m in enumerate(cond.members)
+    ]
     key_text = "_".join(str(v) for v in key if v is not None)
     title = config.CUSTOM_TITLES.get(key_text, f"{config.TITLE_PREFIX} — {key_text}")
-    render(curves, title, out_dir / f"{safe_filename(key_text)}_comparison")
+    render(curves, title, out_dir / f"{safe_filename(key_text)}_combined", stats_text(cond.members))
 
 
 def plot_overview(conditions: list[Condition], family_for, out_dir: Path) -> None:
@@ -157,20 +172,18 @@ def plot_overview(conditions: list[Condition], family_for, out_dir: Path) -> Non
     axes = axes.ravel()
     for i, cond in enumerate(conditions):
         ax = axes[i]
-        family = family_for(cond, i)
-        colours = shades(family, max(len(cond.members), 1))
+        colours = shades(family_for(cond, i), max(len(cond.members), 1))
         for j, m in enumerate(cond.members):
-            ax.plot(m.wavelength, m.absorbance, color=colours[j], lw=1.2)
-        ax.set_title(cond.name, fontsize=8.5)
+            ax.plot(m.wavelength, m.absorbance, color=colours[j], lw=1.2, label=legend_label(m))
+        # Panel label (inside the axes) instead of a title.
+        ax.text(0.97, 0.95, cond.name, transform=ax.transAxes, ha="right", va="top", fontsize=8.5)
+        style_axes(ax, tick_size=8)
         if i % cols == 0:
             ax.set_ylabel(config.Y_AXIS_LABEL, fontsize=8.5)
         if i >= (rows - 1) * cols:
             ax.set_xlabel(config.X_AXIS_LABEL, fontsize=8.5)
-        if config.SHOW_GRID:
-            ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.35)
     for j in range(n, len(axes)):
         axes[j].axis("off")
-    fig.suptitle(f"{config.TITLE_PREFIX} — overview", y=1.02, fontsize=12, weight="semibold")
     fig.tight_layout()
     save_figure(fig, out_dir / "all_conditions", config.PNG_DPI, False)
     plt.close(fig)
