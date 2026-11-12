@@ -30,6 +30,25 @@ def baseline(spec: Spectrum) -> float:
     return a750 if (_cfg("SUBTRACT_A750", True) and np.isfinite(a750)) else 0.0
 
 
+def linear_turbidity_baseline(spec: Spectrum):
+    """Turbidity modelled as a straight line through (520 nm, A520) and (750 nm, A750):
+         a = (A750 - A520) / (750 - 520)
+         baseline(l) = A750 + a * (l - 750)          i.e. y = a*x + b with x = l - 750 and b = A750
+    The corrected spectrum is A(l) - baseline(l); it is exactly 0 at 520 and 750 nm.
+    Returns None when 520 or 750 nm is outside the measured range."""
+    a520, a750 = abs_at(spec, 520.0), abs_at(spec, 750.0)
+    if not (np.isfinite(a520) and np.isfinite(a750)):
+        return None
+    slope = (a750 - a520) / (750.0 - 520.0)
+    return a750 + slope * (spec.wavelength - 750.0)
+
+
+def turbidity_corrected_absorbance(spec: Spectrum):
+    """Spectrum with the linear turbidity baseline removed (None if it cannot be computed)."""
+    base = linear_turbidity_baseline(spec)
+    return None if base is None else spec.absorbance - base
+
+
 def _scale_to_mass(spec: Spectrum):
     """Return (dilution F, stock volume mL, extract mass mg); mass is NaN when unknown."""
     df = float(spec.dilution_factor)
@@ -125,6 +144,8 @@ def calculate_ritchie_pigments(spec: Spectrum) -> dict:
         s[f"{k}_ug_mg"] = s[f"{k}_ug_mL"] * factor
     return s
 
+
+# Old name kept so existing calls do not break (it computed Ritchie Tables 1 and 2, not Lichtenthaler).
 calculate_lichtenthaler_pigments = calculate_ritchie_pigments
 
 
