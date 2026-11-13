@@ -125,21 +125,22 @@ def _draw(curves: list[Curve], out_stem: Path, box_text: str, corrected: bool) -
     plt.close(fig)
 
 
-def render(curves: list[Curve], title: str, out_stem: Path, box_text: str = "") -> None:
-    """Writes the figure, then the same figure with the turbidity baseline removed
+def render(curves: list[Curve], title: str, out_stem: Path, box_text: str = "", box_text_corr: str = "") -> None:
+    """Writes the figure, then the same figure with the linear turbidity baseline removed
     (<name>_turbidity_corrected.png) unless config.TURBIDITY_PLOTS is False.
     `title` is kept for the callers, but no title is drawn."""
     out_stem = Path(out_stem)
     _draw(curves, out_stem, box_text, corrected=False)
     if getattr(config, "TURBIDITY_PLOTS", True):
         if all(c.y_corr is not None for c in curves):
-            _draw(curves, out_stem.with_name(out_stem.name + TURB_SUFFIX), "", corrected=True)
+            _draw(curves, out_stem.with_name(out_stem.name + TURB_SUFFIX), box_text_corr, corrected=True)
         else:
             warnings.warn(f"{out_stem.name}: A520 or A750 outside the measured range, no turbidity-corrected plot.")
 
 
-def legend_label(spec: Spectrum, with_stats: bool = True) -> str:
-    """'Tube 1 (F=2)', 'Tube 1 (r=12.5, ref)', 'Tube 2 (r=5, F=2)'..."""
+def legend_label(spec: Spectrum, with_stats: bool = True, turbidity: str | None = None) -> str:
+    """'Tube 1 (F=2)', 'Tube 1 (r=12.5, ref)', 'Tube 2 (r=5, F=2)'...  The Chl a value in the legend follows
+    the same turbidity model as the figure (turbidity='linear' for the corrected figure)."""
     meta = get_meta(spec)
     parts = []
     if meta["carbon_ratio"] is not None:
@@ -149,38 +150,39 @@ def legend_label(spec: Spectrum, with_stats: bool = True) -> str:
     if meta["is_reference"]:
         parts.append("ref")
     base = f"Tube {spec.replicate} ({', '.join(parts)})"
-    chl_a = spec.stats.get("Chl_a_ug_mL")
-    if with_stats and config.STATS_IN_LEGEND and chl_a is not None and np.isfinite(chl_a):
-        base += f" (Chl a: {fmt(chl_a)} µg/mL)"
+    if with_stats and config.STATS_IN_LEGEND:
+        st = spec.stats if turbidity is None else calculate_pigments_and_metrics(spec, turbidity)
+        chl_a = st.get("Chl_a_ug_mL")
+        if chl_a is not None and np.isfinite(chl_a):
+            base += f" (Chl a: {fmt(chl_a)} µg/mL)"
     return base
 
 
 def _curve(spec: Spectrum, colour: str, **kw) -> Curve:
     return Curve(spec.wavelength, spec.absorbance, legend_label(spec), colour,
                  y_corr=turbidity_corrected_absorbance(spec),
-                 label_corr=legend_label(spec, with_stats=False), **kw)
+                 label_corr=legend_label(spec, turbidity="linear"), **kw)
+
+
+def _box_corr(members: list[Spectrum]) -> str:
+    """Stats box of the corrected figure: pigments recomputed on the linearly corrected spectra."""
+    txt = stats_text(members, turbidity="linear")
+    return ("Linear turbidity correction\n" + txt) if txt else ""
 
 
 def plot_individual(spec: Spectrum, shade: str, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     title = config.CUSTOM_TITLES.get(spec.name, spec.name)
-    render([_curve(spec, shade)], title, out_dir / f"{safe_filename(spec.source)}_spectrum", stats_text([spec]))
+    render([_curve(spec, shade)], title, out_dir / f"{safe_filename(spec.source)}_spectrum",
+           stats_text([spec]), _box_corr([spec]))
 
 
 def plot_replicates(cond: Condition, family: str, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     colours = shades(family, len(cond.members))
     curves = [_curve(m, colours[i]) for i, m in enumerate(cond.members)]
-    render(curves, cond.name, out_dir / f"{safe_filename(cond.name)}_replicates", stats_text(cond.members))
-
-
-def plot_comparison(key: tuple, conds: list[Condition], family: str, out_dir: Path) -> None:
-    cond = conds[0]
-    colours = shades(family, max(len(cond.members), 1))
-    curves = [_curve(m, colours[i], lw=1.8, alpha=0.9) for i, m in enumerate(cond.members)]
-    key_text = "_".join(str(v) for v in key if v is not None)
-    title = config.CUSTOM_TITLES.get(key_text, f"{config.TITLE_PREFIX} — {key_text}")
-    render(curves, title, out_dir / f"{safe_filename(key_text)}_combined", stats_text(cond.members))
+    render(curves, cond.name, out_dir / f"{safe_filename(cond.name)}_replicates",
+           stats_text(cond.members), _box_corr(cond.members))
 
 
 def _tube_sort_key(spec: Spectrum):
@@ -189,31 +191,57 @@ def _tube_sort_key(spec: Spectrum):
     return (r, spec.dilution_factor, m["is_reference"], m["time"])
 
 
-def plot_tube_comparisons(spectra: list[Spectrum], out_dir: Path, family: str | None = None) -> list[Path]:
-    """One figure per (batch, tube): every condition measured on that tube is overlaid
-    (carbon ratio r, ref, dilution F...). Curves go from light to dark with increasing r, then F.
-    Call it once per input folder with the spectra of that folder."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    groups: dict[tuple, list[Spectrum]] = defaultdict(list)
-    for s in spectra:
-        m = get_meta(s)
-        groups[(m["batch"], m["tube"])].append(s)
+# Spectra seen by plot_comparison, per output folder: {out_dir: {(batch, tube): {file: Spectrum}}}.
+# plot_comparison is called once per condition; each call re-writes the tube figures with everything seen
+# so far, so the last call leaves the complete comparison on disk (same file names, overwritten).
+_SEEN: dict[str, dict[tuple, dict[str, Spectrum]]] = defaultdict(lambda: defaultdict(dict))
+_FAMILY: dict[tuple, str] = {}
 
+
+def _register(out_dir: Path, spec: Spectrum, family: str | None) -> None:
+    m = get_meta(spec)
+    folder = str(Path(out_dir).resolve())
+    _SEEN[folder][(m["batch"], m["tube"])][spec.source] = spec
+    if family:
+        _FAMILY.setdefault((folder, m["batch"], m["tube"]), family)
+
+
+def _write_tube_comparisons(out_dir: Path) -> list[Path]:
+    """One figure per (batch, tube) with every condition measured on that tube superimposed
+    (r, ref, F...), light to dark with increasing r then F. Two files: raw and turbidity-corrected."""
+    out_dir = Path(out_dir)
+    folder = str(out_dir.resolve())
     written = []
-    for idx, ((batch, tube), members) in enumerate(sorted(groups.items())):
+    for idx, ((batch, tube), by_file) in enumerate(sorted(_SEEN[folder].items())):
+        members = sorted(by_file.values(), key=_tube_sort_key)
         if len(members) < 2:
-            continue  # nothing to compare
-        members = sorted(members, key=_tube_sort_key)
+            continue  # nothing to compare yet
         for s in members:
             if not s.stats:
                 s.stats = calculate_pigments_and_metrics(s)
-        colours = shades(family or palette_name(batch, idx), len(members))
+        family = _FAMILY.get((folder, batch, tube)) or palette_name(batch, idx)
+        colours = shades(family, len(members))
         curves = [_curve(s, colours[i], lw=1.9) for i, s in enumerate(members)]
-        stem = out_dir / f"{safe_filename(batch)}_tube{safe_filename(tube)}_all_conditions"
-        render(curves, f"{batch} tube {tube}", stem, "")  # no stats box: mean across conditions is meaningless
+        stem = out_dir / f"{safe_filename(batch)}_tube{safe_filename(tube)}_comparison"
+        render(curves, f"{batch} tube {tube}", stem, "", "")  # a mean across different conditions would be meaningless
         written.append(stem)
     return written
+
+
+def plot_comparison(key: tuple, conds: list[Condition], family: str, out_dir: Path) -> None:
+    """Comparison of every condition measured on the same tube (one figure per tube, plus its
+    turbidity-corrected version). Keeps the old signature, so the runner does not change."""
+    for cond in conds:
+        for m in cond.members:
+            _register(out_dir, m, family)
+    _write_tube_comparisons(out_dir)
+
+
+def plot_tube_comparisons(spectra: list[Spectrum], out_dir: Path, family: str | None = None) -> list[Path]:
+    """Same as plot_comparison but from a plain list of spectra (can be called once at the end of a folder)."""
+    for s in spectra:
+        _register(out_dir, s, family)
+    return _write_tube_comparisons(out_dir)
 
 
 def _overview(conditions: list[Condition], family_for, out_stem: Path, corrected: bool) -> None:
@@ -229,7 +257,7 @@ def _overview(conditions: list[Condition], family_for, out_stem: Path, corrected
             y = turbidity_corrected_absorbance(m) if corrected else m.absorbance
             if y is None:
                 continue
-            ax.plot(m.wavelength, y, color=colours[j], lw=1.2, label=legend_label(m, with_stats=not corrected))
+            ax.plot(m.wavelength, y, color=colours[j], lw=1.2, label=legend_label(m, with_stats=False))
         ax.text(0.97, 0.95, cond.name, transform=ax.transAxes, ha="right", va="top", fontsize=8.5)
         style_axes(ax, tick_size=8)
         if i % cols == 0:

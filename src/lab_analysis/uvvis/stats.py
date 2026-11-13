@@ -59,19 +59,38 @@ def _scale_to_mass(spec: Spectrum):
     return df, v, m
 
 
-def calculate_pigments_and_metrics(spec: Spectrum) -> dict:
+def _offset_fn(spec: Spectrum, model: str):
+    """Baseline subtracted at each wavelength.
+       'flat'   : A750 everywhere (Ritchie 2008);
+       'linear' : straight line through (520, A520) and (750, A750);
+       'none'   : nothing."""
+    a750 = abs_at(spec, 750.0)
+    if model == "linear":
+        a520 = abs_at(spec, 520.0)
+        if np.isfinite(a520) and np.isfinite(a750):
+            slope = (a750 - a520) / (750.0 - 520.0)
+            return lambda wl: a750 + slope * (wl - 750.0)
+        return lambda wl: float("nan")
+    off = a750 if (model == "flat" and np.isfinite(a750)) else 0.0
+    return lambda wl: off
+
+
+def calculate_pigments_and_metrics(spec: Spectrum, turbidity: str | None = None) -> dict:
     """Chlorophylls a, b and carotenoids (Lopez 2025 / Lichtenthaler & Buschmann 2001, ethanol):
          ca = 13.36 A664 - 5.19 A648
          cb = 27.43 A648 - 8.12 A664
          cc = (1000 A470 - 2.13 ca - 97.64 cb) / 209          [ug/mL]
-    A(wl) is first corrected by subtracting A750 (config.SUBTRACT_A750, default True)."""
+    turbidity=None  -> flat A750 subtraction if config.SUBTRACT_A750 (default), stored in spec.flags;
+    turbidity='linear' -> baseline line through A520 and A750 (used by the *_turbidity_corrected figures;
+    spec.flags is left untouched)."""
+    model = turbidity or ("flat" if _cfg("SUBTRACT_A750", True) else "none")
+    off_fn = _offset_fn(spec, model)
     s = {}
-    off = baseline(spec)
     for wl in CSV_WAVELENGTHS:
         raw = abs_at(spec, float(wl))
         s[f"A_{wl}"] = raw
-        s[f"Ac_{wl}"] = raw - off
-    s["A750_offset_used"] = off
+        s[f"Ac_{wl}"] = raw - off_fn(float(wl))
+    s["A750_offset_used"] = off_fn(750.0)
 
     max_abs = float(spec.absorbance.max()) if spec.absorbance.size else 0.0
     s["max_absorbance"] = max_abs  # information only (includes the Soret band)
@@ -103,16 +122,17 @@ def calculate_pigments_and_metrics(spec: Spectrum) -> dict:
         flags.append("Some equation wavelengths are outside the measured range.")
     a750 = abs_at(spec, 750.0)
     if np.isfinite(a750) and abs(a750) > _cfg("TURBIDITY_THRESHOLD_A750", 0.02):
-        action = "subtracted from all wavelengths" if off else "NOT subtracted"
+        action = "subtracted from all wavelengths" if model == "flat" else "NOT subtracted as a flat offset"
         flags.append(f"A750 = {a750:.3f} (baseline offset or turbidity), {action}.")
     mask = (spec.wavelength >= 630) & (spec.wavelength <= 680)
-    red_max = float(spec.absorbance[mask].max()) - off if np.any(mask) else a664
+    red_max = float(spec.absorbance[mask].max()) - off_fn(664.0) if np.any(mask) else a664
     if red_max > 0 and np.isfinite(s["Ac_520"]) and s["Ac_520"] / red_max > _cfg("CAROTENOID_MAX_RATIO_A520", 0.10):
         flags.append(f"A520/RedMax = {s['Ac_520'] / red_max * 100:.1f} % (>= {_cfg('CAROTENOID_MAX_RATIO_A520', 0.10) * 100:.0f} %).")
     if any(np.isfinite(s[k]) and s[k] < 0 for k in ("Chl_a_ug_mL", "Chl_b_ug_mL", "Carotenoids_ug_mL")):
         flags.append("Negative pigment value (low signal): do not use this spectrum.")
-    spec.flags = flags
     s["flags"] = flags
+    if turbidity is None:
+        spec.flags = flags
     return s
 
 
@@ -160,10 +180,16 @@ def fmt(value: float) -> str:
     return f"{value:.3f}" if abs(value) >= 0.001 else f"{value:.2e}"
 
 
-def stats_text(members: list[Spectrum]) -> str:
+def stats_text(members: list[Spectrum], turbidity: str | None = None) -> str:
+    """Stats box text. turbidity=None uses spec.stats (default correction);
+    turbidity='linear' recomputes the pigments on the linearly corrected spectra."""
+    if turbidity is None:
+        dicts = [m.stats for m in members]
+    else:
+        dicts = [calculate_pigments_and_metrics(m, turbidity) for m in members]
     lines = []
     for name in config.STATS_FIELDS:
-        v = stat_values(members, name)
+        v = np.array([d.get(name) for d in dicts if d.get(name) is not None], dtype=float)
         v = v[np.isfinite(v)]
         if v.size == 0:
             continue
@@ -172,7 +198,7 @@ def stats_text(members: list[Spectrum]) -> str:
         else:
             txt = f"{fmt(v.mean())} ± {fmt(v.std(ddof=1)) if v.size > 1 else '–'}"
         lines.append(f"{name}: {txt}")
-    if len(members) > 1:
+    if lines and len(members) > 1:
         lines.append(f"(mean ± SD, n = {len(members)})")
     return "\n".join(lines)
 
