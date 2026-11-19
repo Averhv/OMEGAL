@@ -14,15 +14,22 @@ def _rep_sort_key(rep: str):
     return (1, 0, rep)
 
 
-def organise(measurements: list[Measurement], sequential: set[str]) -> list[Condition]:
-    """Group replicates (by base name) into Conditions.
+def _temp_value(temp: str | None) -> float:
+    if not temp:
+        return -1.0
+    try:
+        return float(temp.rstrip("cC° "))
+    except ValueError:
+        return 1e6
 
-    `sequential`: sources whose a/b/c letters were assigned by column order
-    (XLSX). For those, the file-name letter is ignored and re-assigned.
-    """
+
+def organise(measurements: list[Measurement], sequential: set[str]) -> list[Condition]:
+    """Group replicates (by base name) into Conditions."""
     groups: dict[str, list[Measurement]] = {}
     for m in measurements:
-        base, letter = split_replicate(m.name)
+        base, letter, basis = split_replicate(m.name, fallback_basis=m.stats.get("basis"))
+        if basis:
+            m.stats["basis"] = basis
         m.group = base
         m.replicate = "" if m.source in sequential else letter
         groups.setdefault(base, []).append(m)
@@ -40,13 +47,13 @@ def organise(measurements: list[Measurement], sequential: set[str]) -> list[Cond
                 m.replicate = candidate
         members.sort(key=lambda m: _rep_sort_key(m.replicate))
 
-        sample, vol, tim = parse_condition(base)
+        sample, vol, tim, temp = parse_condition(base)
         for m in members:
-            m.sample, m.volume, m.time = sample, vol, tim
+            m.sample, m.volume, m.time, m.temperature = sample, vol, tim, temp
             if len(members) > 1:
                 m.name = f"{base} {m.replicate}"
 
-        conditions.append(Condition(base, members, sample, vol, tim))
+        conditions.append(Condition(base, members, sample, vol, tim, temp))
 
     return sorted(
         conditions,
@@ -54,5 +61,6 @@ def organise(measurements: list[Measurement], sequential: set[str]) -> list[Cond
             c.sample.lower(),
             c.volume if c.volume is not None else 1e9,
             c.time if c.time is not None else 1e9,
+            _temp_value(c.temperature),
         ),
     )

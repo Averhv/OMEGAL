@@ -285,7 +285,12 @@ def plot_comparison(key: tuple, conds: list[Condition], family: str,
                 p_sd=ps if multi else None,
             ))
 
-    what = {"time": "sonication time", "volume": "volume", "sample": "sample"}[compare_over]
+    what = {
+        "time": "sonication time",
+        "volume": "volume",
+        "sample": "sample",
+        "temperature": "heat treatment",
+    }[compare_over]
     key_text = "_".join(str(v) for v in key if v is not None)
     title = config.CUSTOM_TITLES.get(
         key_text, f"{config.TITLE_PREFIX} — {key_text} — effect of {what}"

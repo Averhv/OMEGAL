@@ -8,7 +8,10 @@ from typing import Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
+from matplotlib.colors import to_rgb
 from matplotlib.lines import Line2D
+from matplotlib.patches import FancyBboxPatch
 from matplotlib.ticker import AutoMinorLocator
 from matplotlib.transforms import ScaledTranslation
 
@@ -71,12 +74,100 @@ def draw_guides(ax) -> None:
                 ha="right", va="top", fontsize=7.5, color="0.45")
 
 
-def _draw(curves: list[Curve], out_stem: Path, box_text: str, corrected: bool) -> None:
+# ---------------------------------------------------------------------------
+# Coloured stats box (comparison figures): one row per quantity, one value per curve,
+# each value written in the colour of its curve.
+# ---------------------------------------------------------------------------
+BOX_FONT = 8.5
+BOX_MONO = "DejaVu Sans Mono"   # fixed-width font: columns stay aligned and widths are exact
+BOX_GREY = "#555555"
+BOX_WAVELENGTHS = GUIDE_WAVELENGTHS
+
+
+@dataclass
+class ColorBox:
+    lines: list  # each line = list of (text, colour) segments
+
+    def __bool__(self) -> bool:
+        return bool(self.lines)
+
+    @property
+    def width_chars(self) -> int:
+        return max((sum(len(t) for t, _ in ln) for ln in self.lines), default=0)
+
+
+def comparison_box(members: list[Spectrum], colours: list[str], corrected: bool) -> ColorBox:
+    """A470 / A648 / A664 and Chl a, Chl b, carotenoids for every curve, in curve colours.
+    Raw figure: absorbances as plotted, pigments with the default (A750) correction.
+    Corrected figure: everything recomputed on the linearly corrected spectra."""
+    dicts = [calculate_pigments_and_metrics(m, "linear") if corrected else m.stats for m in members]
+    akey = "Ac_{}" if corrected else "A_{}"
+    wls = BOX_WAVELENGTHS if len(members) <= 6 else (664,)   # keep the box narrow with many curves
+    sep = (" | ", BOX_GREY)
+
+    def row(label: str, key: str) -> list:
+        segs = [(f"{label:<7}", "#222222")]
+        for i, d in enumerate(dicts):
+            if i:
+                segs.append(sep)
+            v = d.get(key)
+            segs.append((f"{v:6.3f}" if v is not None and np.isfinite(v) else "   n/a", colours[i]))
+        return segs
+
+    lines = [[("Turbidity removed" if corrected else "Raw absorbance", BOX_GREY)]]
+    lines += [row(f"A{wl}:", akey.format(wl)) for wl in wls]
+    lines.append([("Pigments (µg/mL)", BOX_GREY)])
+    lines += [row("Chl a:", "Chl_a_ug_mL"), row("Chl b:", "Chl_b_ug_mL"), row("Carot.:", "Carotenoids_ug_mL")]
+    return ColorBox(lines)
+
+
+def _text_effects(colour: str):
+    """Pale shades are hard to read on white: add a thin outline in a darker shade of the same colour."""
+    r, g, b = to_rgb(colour)
+    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    if lum <= 0.62:
+        return []
+    edge = (0.45 * r, 0.45 * g, 0.45 * b)
+    return [pe.withStroke(linewidth=1.0, foreground=edge)]
+
+
+def _draw_color_box(fig, side, box: ColorBox, y_top: float) -> None:
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    side_px = side.get_window_extent(renderer)
+    probe = side.text(0, 0, "M" * 40, fontfamily=BOX_MONO, fontsize=BOX_FONT, transform=side.transAxes)
+    char_w = probe.get_window_extent(renderer).width / 40 / side_px.width          # axes fraction
+    probe.remove()
+    line_h = BOX_FONT * 1.55 * fig.dpi / 72 / side_px.height                       # axes fraction
+    pad_x, pad_y = 7 / side_px.width, 7 / side_px.height
+
+    w = box.width_chars * char_w + 2 * pad_x
+    h = len(box.lines) * line_h + 2 * pad_y - 0.25 * line_h
+    side.add_patch(FancyBboxPatch((0.0, y_top - h), w, h, boxstyle="round,pad=0,rounding_size=0.015",
+                                  transform=side.transAxes, facecolor="white", edgecolor="#B8C1CC",
+                                  alpha=0.92, zorder=1, clip_on=False))
+    for i, line in enumerate(box.lines):
+        col = 0
+        y = y_top - pad_y - i * line_h
+        for text, colour in line:
+            colour = colour or "#222222"
+            bold = colour not in ("#222222", BOX_GREY)
+            side.text(pad_x + col * char_w, y, text, transform=side.transAxes, ha="left", va="top",
+                      fontfamily=BOX_MONO, fontsize=BOX_FONT, color=colour,
+                      fontweight="bold" if bold else "normal",
+                      path_effects=_text_effects(colour) if bold else [], zorder=2, clip_on=False)
+            col += len(text)
+
+
+def _draw(curves: list[Curve], out_stem: Path, box_text, corrected: bool) -> None:
     margins = 1.2
     labels = [(c.label_corr or c.label) if corrected else c.label for c in curves]
     n_leg = max((len(t) for t in labels if t), default=0)
-    n_box = max((len(t) for t in box_text.splitlines()), default=0)
-    side_w = max(0.75 + 0.065 * n_leg, 0.45 + 0.065 * n_box, 1.4)
+    if isinstance(box_text, ColorBox):
+        box_w = 0.35 + 0.0715 * box_text.width_chars
+    else:
+        box_w = 0.45 + 0.065 * max((len(t) for t in box_text.splitlines()), default=0)
+    side_w = max(0.75 + 0.065 * n_leg, box_w, 1.4)
 
     fig = plt.figure(figsize=(8.2 + side_w + margins, 5.6))
     gs = fig.add_gridspec(1, 2, width_ratios=[8.2, side_w])
@@ -115,9 +206,12 @@ def _draw(curves: list[Curve], out_stem: Path, box_text: str, corrected: bool) -
             fig.canvas.draw()
             bbox = legend.get_window_extent().transformed(side.transAxes.inverted())
             y_top = bbox.y0 - 0.025
-        shift = ScaledTranslation(0.055, 0, fig.dpi_scale_trans)
-        box_style = {"boxstyle": "round,pad=0.45", "facecolor": "white", "edgecolor": "#B8C1CC", "alpha": 0.92}
-        side.text(0, y_top, box_text, transform=side.transAxes + shift, ha="left", va="top", fontsize=8.5, bbox=box_style)
+        if isinstance(box_text, ColorBox):
+            _draw_color_box(fig, side, box_text, y_top)
+        else:
+            shift = ScaledTranslation(0.055, 0, fig.dpi_scale_trans)
+            box_style = {"boxstyle": "round,pad=0.45", "facecolor": "white", "edgecolor": "#B8C1CC", "alpha": 0.92}
+            side.text(0, y_top, box_text, transform=side.transAxes + shift, ha="left", va="top", fontsize=8.5, bbox=box_style)
 
     fig.tight_layout()
     Path(out_stem).parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +219,7 @@ def _draw(curves: list[Curve], out_stem: Path, box_text: str, corrected: bool) -
     plt.close(fig)
 
 
-def render(curves: list[Curve], title: str, out_stem: Path, box_text: str = "", box_text_corr: str = "") -> None:
+def render(curves: list[Curve], title: str, out_stem: Path, box_text="", box_text_corr="") -> None:
     """Writes the figure, then the same figure with the linear turbidity baseline removed
     (<name>_turbidity_corrected.png) unless config.TURBIDITY_PLOTS is False.
     `title` is kept for the callers, but no title is drawn."""
@@ -223,7 +317,9 @@ def _write_tube_comparisons(out_dir: Path) -> list[Path]:
         colours = shades(family, len(members))
         curves = [_curve(s, colours[i], lw=1.9) for i, s in enumerate(members)]
         stem = out_dir / f"{safe_filename(batch)}_tube{safe_filename(tube)}_comparison"
-        render(curves, f"{batch} tube {tube}", stem, "", "")  # a mean across different conditions would be meaningless
+        cols = [c.color for c in curves]
+        render(curves, f"{batch} tube {tube}", stem,
+               comparison_box(members, cols, corrected=False), comparison_box(members, cols, corrected=True))
         written.append(stem)
     return written
 

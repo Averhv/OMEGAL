@@ -95,15 +95,21 @@ def run(
     # --- comparisons ---
     if config.MAKE_COMPARISONS:
         if config.COMPARE_OVER == "time":
-            key_of = lambda c: (c.sample, c.volume)
+            key_of = lambda c: (c.sample, c.volume, c.temperature)
             sort_of = lambda c: c.time if c.time is not None else 1e9
             base_folder = out_dir / "comparisons" / "by_time"
         elif config.COMPARE_OVER == "volume":
-            key_of = lambda c: (c.sample, c.time)
+            key_of = lambda c: (c.sample, c.time, c.temperature)
             sort_of = lambda c: c.volume if c.volume is not None else 1e9
             base_folder = out_dir / "comparisons" / "by_volume"
+        elif config.COMPARE_OVER == "temperature":
+            key_of = lambda c: (c.sample, c.volume, c.time)
+            sort_of = lambda c: (
+                -1.0 if not c.temperature else float(c.temperature.rstrip("cC° "))
+            )
+            base_folder = out_dir / "comparisons" / "by_temperature"
         else:  # sample
-            key_of = lambda c: (c.volume, c.time)
+            key_of = lambda c: (c.volume, c.time, c.temperature)
             sort_of = lambda c: c.sample.lower()
             base_folder = out_dir / "comparisons" / "by_sample"
 
@@ -111,7 +117,9 @@ def run(
         for cond in conditions:
             series.setdefault(key_of(cond), []).append(cond)
 
-        for index, key in enumerate(sorted(series, key=lambda k: tuple(v or 0 for v in k))):
+        for index, key in enumerate(
+            sorted(series, key=lambda k: tuple(v if isinstance(v, (int, float)) else 0 for v in k))
+        ):
             conds = sorted(series[key], key=sort_of)
             if len(conds) < 2:
                 continue

@@ -19,9 +19,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Where to write results. "
                              f"Default: <input_dir>/{config.OUTPUT_NAME}.")
     parser.add_argument("--plot-kinds", nargs="+",
-                        choices=["combined", "q", "passant", "both"], default=None,
-                        help="Figure kinds to produce (default: combined).")
-    parser.add_argument("--compare-over", choices=["time", "volume", "sample"],
+                        choices=["q", "combined", "passant", "both"], default=None,
+                        help="Figure kinds to produce (default: q).")
+    parser.add_argument("--compare-over", choices=["time", "volume", "sample", "temperature"],
                         default=None, help="Dimension varied in comparison plots.")
     parser.add_argument("--no-individual", action="store_true")
     parser.add_argument("--no-replicates", action="store_true")

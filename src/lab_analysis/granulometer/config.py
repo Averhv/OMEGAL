@@ -21,9 +21,9 @@ SHOW_INLINE = "comparison"
 # "q"         : differential only
 # "passant"   : cumulative only
 # "both"      : twin axes q (left) + cumulative (right)
-PLOT_KINDS = ("combined",)
+PLOT_KINDS = ("q",)
 
-MAKE_INDIVIDUAL = True
+MAKE_INDIVIDUAL = False
 MAKE_REPLICATES = True
 MAKE_COMPARISONS = True
 MAKE_OVERVIEW = True

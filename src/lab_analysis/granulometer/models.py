@@ -23,6 +23,7 @@ class Measurement:
     sample: str = ""
     volume: Optional[float] = None
     time: Optional[float] = None
+    temperature: Optional[str] = None
     flags: list = field(default_factory=list)
 
     @property
@@ -32,9 +33,10 @@ class Measurement:
 
 @dataclass
 class Condition:
-    """A set of replicate measurements sharing sample/volume/time."""
+    """A set of replicate measurements sharing sample/volume/time/temperature."""
     name: str
     members: list
     sample: str
     volume: Optional[float]
     time: Optional[float]
+    temperature: Optional[str] = None

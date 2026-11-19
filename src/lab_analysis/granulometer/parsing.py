@@ -24,6 +24,19 @@ REPLICATE_SUFFIX_RE = re.compile(
 
 VOLUME_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*ml(?![a-zA-Z])", re.IGNORECASE)
 TIME_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:s|sec|secs|seconds?)(?![a-zA-Z])", re.IGNORECASE)
+TEMPERATURE_RE = re.compile(
+    r"(?<![a-zA-Z0-9])(\d+(?:[.,]\d+)?)\s*°?\s*c(?![a-zA-Z0-9])",
+    re.IGNORECASE,
+)
+
+BASIS_ALIASES = {
+    "surface": "surface",
+    "volume": "volume",
+    "longueur": "longueur",
+    "length": "longueur",
+    "nombre": "nombre",
+    "number": "nombre",
+}
 
 LABEL_MAP = [
     ("variance geo", None), ("variance", "var_um2"), ("ecart", "std_um"),
@@ -45,13 +58,23 @@ def normalise_text(text: str) -> str:
     return "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
 
 
+def _normalise_basis(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    cleaned = normalise_text(str(raw)).strip()
+    for key, val in BASIS_ALIASES.items():
+        if cleaned.startswith(key):
+            return val
+    return cleaned or None
+
+
 def to_float(value) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     if value is None:
         raise ValueError("empty")
     token = str(value).strip()
-    token = token.strip('"\' ')      
+    token = token.strip('"\' ')
     if not STRICT_NUMBER_RE.match(token):
         raise ValueError(token)
     return float(token.replace(",", "."))
@@ -64,7 +87,7 @@ def first_number(text: str) -> Optional[float]:
 
 # --- Metadata block ----------------------------------------------------------
 def split_label_value(line: str) -> tuple[str, str]:
-    s = line.strip().strip('"\'')            
+    s = line.strip().strip('"\'')
     parts = re.split(r"\t+|\s{2,}|\s*:\s*", s, maxsplit=1)
     if len(parts) == 2:
         return parts[0], parts[1]
@@ -85,7 +108,12 @@ def parse_metadata(lines: list[str]) -> dict:
             if lab.startswith(prefix):
                 if key is None or key in stats:
                     break
-                stats[key] = value.strip() if key in TEXT_KEYS else first_number(value)
+                if key == "basis":
+                    stats[key] = _normalise_basis(value)
+                elif key in TEXT_KEYS:
+                    stats[key] = value.strip()
+                else:
+                    stats[key] = first_number(value)
                 break
     d10, d50, d90 = stats.get("D10_um"), stats.get("D50_um"), stats.get("D90_um")
     stats["span_calculated"] = (
@@ -97,42 +125,59 @@ def parse_metadata(lines: list[str]) -> dict:
 
 
 # --- Name parsing ------------------------------------------------------------
-def split_replicate(name: str) -> tuple[str, str, str]:
+def split_replicate(
+    name: str,
+    fallback_basis: Optional[str] = None,
+) -> tuple[str, str, Optional[str]]:
     """
-    Extrait le nom de base, le réplicat et le type de base (basis: volume, surface, longueur, nombre).
-    Exemple: 'SF_1week_3mL_5W_60s_3_surface.txt' -> ('SF_1week_3mL_5W_60s', '3', 'surface')
+    Extrait (base, réplicat, basis) depuis un nom de fichier ou d'échantillon.
+    Exemple: 'SF1_1611_1.5mL_30s_5W_1_surface.txt' -> ('SF1_1611_1.5mL_30s_5W', '1', 'surface')
+    Exemple: 'SF1_1611_63C_1.5mL_30s_5W_surface.txt' -> ('SF1_1611_63C_1.5mL_30s_5W', '', 'surface')
     """
-    stem = Path(name).stem
-    
+    stem = Path(name).stem.strip()
+    basis: Optional[str] = _normalise_basis(fallback_basis)
+
     # 1. Détecter le type de distribution (basis) à la fin du nom
-    basis = "volume"
-    for b in ["surface", "longueur", "nombre"]:
-        if stem.endswith(f"_{b}"):
-            basis = b
-            stem = stem[:-len(b)].rstrip("-_")
+    for b_key, b_val in BASIS_ALIASES.items():
+        m_basis = re.search(rf"[-_]{b_key}$", stem, re.IGNORECASE)
+        if m_basis:
+            basis = b_val
+            stem = stem[:m_basis.start()].rstrip("-_")
             break
-            
-    # 2. Extraire le réplicat (chiffre ou lettre de fin, ex: _1, _2, _3) même s'il y a un suffixe
-    match = re.search(r"[-_](?:rep)?([0-9]+|[a-zA-Z])$", stem)
+
+    # 2. Extraire le réplicat final (chiffre 1..99 ou lettre a..z, hors décimales type 1.5)
+    match = re.search(
+        r"[-_](?:rep(?:licate)?[-_]*)?([0-9]{1,2}|[a-zA-Z])$",
+        stem,
+        re.IGNORECASE,
+    )
     if match:
-        rep = match.group(1)
-        base = stem[:match.start()]
-        return base.strip("-_"), rep, basis
-        
-    return stem, "", basis
+        token = match.group(1)
+        prefix_before_token = stem[:match.start()]
+        if not prefix_before_token.endswith("."):
+            rep = token
+            base = prefix_before_token.rstrip("-_")
+            return base, rep, basis
+
+    return stem.rstrip("-_"), "", basis
 
 
-def parse_condition(group: str) -> tuple[str, Optional[float], Optional[float]]:
-    """Return (sample, volume_mL, time_s) from a condition group name."""
+def parse_condition(
+    group: str,
+) -> tuple[str, Optional[float], Optional[float], Optional[str]]:
+    """Return (sample, volume_mL, time_s, temperature) from a condition group name."""
     vol = VOLUME_RE.search(group)
     tim = TIME_RE.search(group)
-    cut = min(
-        (m.start() for m in (vol, tim) if m is not None), default=len(group)
-    ) if (vol or tim) else len(group)
+    temp = TEMPERATURE_RE.search(group)
+
+    matches = [m for m in (vol, tim, temp) if m is not None]
+    cut = min((m.start() for m in matches), default=len(group))
     sample = group[:cut].strip(" _-") or "unknown"
+
     v = float(vol.group(1).replace(",", ".")) if vol else None
     t = float(tim.group(1).replace(",", ".")) if tim else None
-    return sample, v, t
+    temp_str = f"{temp.group(1).replace(',', '.')}C" if temp else None
+    return sample, v, t, temp_str
 
 
 # --- Builders ----------------------------------------------------------------
@@ -169,13 +214,16 @@ def parse_txt(path: Path) -> Measurement:
         except ValueError:
             values = None
         if values and len(values) == 3:
-            d.append(values[0]); q.append(values[1]); p.append(values[2])
+            d.append(values[0])
+            q.append(values[1])
+            p.append(values[2])
         elif d:
             break
-            
+
     stats = parse_metadata(lines[:start - 1])
-    base, rep, basis = split_replicate(path.name)
-    stats["basis"] = stats.get("basis") or basis
+    _, _, file_basis = split_replicate(path.name)
+    resolved_basis = file_basis or _normalise_basis(stats.get("basis")) or "volume"
+    stats["basis"] = resolved_basis
 
     return build_measurement(
         path.stem, str(path), d, q, p, stats
@@ -204,7 +252,10 @@ def parse_xlsx(path: Path) -> list[Measurement]:
                     vals = [to_float(ws.cell(r, c0 + i).value) for i in range(3)]
                 except ValueError:
                     break
-                d.append(vals[0]); q.append(vals[1]); p.append(vals[2]); r += 1
+                d.append(vals[0])
+                q.append(vals[1])
+                p.append(vals[2])
+                r += 1
             prev = max([h[0] for h in headers if h[1] == c0 and h[0] < r0], default=0)
             meta = []
             for rr in range(prev + 1, r0):
@@ -214,8 +265,9 @@ def parse_xlsx(path: Path) -> list[Measurement]:
                     meta.append(f"{label}\t{'' if value is None else value}")
             stats = parse_metadata(meta)
             name = str(stats.get("sample_name") or f"{ws.title} col{c0}")
-            base, rep, basis = split_replicate(name)
-            stats["basis"] = stats.get("basis") or basis
+            _, _, name_basis = split_replicate(name)
+            resolved_basis = name_basis or _normalise_basis(stats.get("basis")) or "volume"
+            stats["basis"] = resolved_basis
             out.append(build_measurement(
                 name, f"{path.name}!{ws.title}!R{r0}C{c0}", d, q, p, stats
             ))

@@ -22,25 +22,28 @@ def write_csvs(measurements: list[Measurement], conditions: list[Condition],
         w = csv.writer(f)
         w.writerow([
             "name", "condition", "sample", "replicate", "volume_mL", "time_s",
-            "source", "basis", "span_instrument", "circulation", "agitation",
-            "flags",
+            "temperature_C", "source", "basis", "span_instrument", "circulation",
+            "agitation", "flags",
         ] + _COLS)
         for m in measurements:
             w.writerow([
                 m.name, m.group, m.sample, m.replicate, m.volume, m.time,
-                m.source, m.stats.get("basis"), m.stats.get("span_instrument"),
-                m.stats.get("circulation"), m.stats.get("agitation"),
-                "; ".join(m.flags),
+                m.temperature, m.source, m.stats.get("basis"),
+                m.stats.get("span_instrument"), m.stats.get("circulation"),
+                m.stats.get("agitation"), "; ".join(m.flags),
             ] + [m.stats.get(c) for c in _COLS])
 
     with (out / "condition_summary.csv").open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        header = ["condition", "sample", "volume_mL", "time_s", "n"]
+        header = ["condition", "sample", "volume_mL", "time_s", "temperature_C", "n"]
         for c in _COLS:
             header += [f"{c}_mean", f"{c}_sd"]
         w.writerow(header + ["D50_cv_percent"])
         for cond in conditions:
-            row = [cond.name, cond.sample, cond.volume, cond.time, len(cond.members)]
+            row = [
+                cond.name, cond.sample, cond.volume, cond.time,
+                cond.temperature, len(cond.members),
+            ]
             for c in _COLS:
                 v = stat_values(cond.members, c)
                 row += [
