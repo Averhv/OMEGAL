@@ -15,6 +15,7 @@ _COLS = [
 
 def write_csvs(measurements: list[Measurement], conditions: list[Condition],
                out: Path) -> None:
+    """Génère les synthèses CSV détaillées des mesures et des conditions."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
 

@@ -1,4 +1,4 @@
-"""Orchestrator: wire parsing → organise → plot → report."""
+"""Orchestrator: wire parsing -> organise -> plot -> report."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,7 +18,6 @@ from ..common.plotting import apply_style
 
 
 def _default_input_dir() -> Path:
-    """Default = current working directory (where the user launched Python)."""
     return Path.cwd()
 
 
@@ -49,11 +48,7 @@ def run(
     input_dir: Optional[Union[Path, str]] = None,
     output_dir: Optional[Union[Path, str]] = None,
 ) -> tuple[list[Measurement], list[Condition]]:
-    """Analyse all exports under `input_dir`, write results to `output_dir`.
-
-    - `input_dir`:  folder with .txt/.xlsx files (default: cwd)
-    - `output_dir`: where results go (default: `<input_dir>/<config.OUTPUT_NAME>`)
-    """
+    """Exécute l'ensemble du pipeline d'analyse granulométrique."""
     apply_style()
 
     in_dir = Path(input_dir).expanduser().resolve() if input_dir else _default_input_dir()
@@ -82,7 +77,7 @@ def run(
     conditions = organise(measurements, sequential)
     samples = sorted({c.sample for c in conditions})
 
-    # --- individual + replicates ---
+    # --- Graphiques Individuels et Réplicats ---
     for i, cond in enumerate(conditions):
         family = _family_for(cond, samples, i)
         if config.MAKE_INDIVIDUAL:
@@ -92,8 +87,11 @@ def run(
         if config.MAKE_REPLICATES and len(cond.members) > 1:
             plot_replicates(cond, family, out_dir / "replicates")
 
-    # --- comparisons ---
+    # --- Comparaisons Multi-Conditions ---
     if config.MAKE_COMPARISONS:
+        temp_sort = lambda c: (
+            -1.0 if not c.temperature else float(c.temperature.rstrip("cC° "))
+        )
         if config.COMPARE_OVER == "time":
             key_of = lambda c: (c.sample, c.volume, c.temperature)
             sort_of = lambda c: c.time if c.time is not None else 1e9
@@ -104,9 +102,7 @@ def run(
             base_folder = out_dir / "comparisons" / "by_volume"
         elif config.COMPARE_OVER == "temperature":
             key_of = lambda c: (c.sample, c.volume, c.time)
-            sort_of = lambda c: (
-                -1.0 if not c.temperature else float(c.temperature.rstrip("cC° "))
-            )
+            sort_of = temp_sort
             base_folder = out_dir / "comparisons" / "by_temperature"
         else:  # sample
             key_of = lambda c: (c.volume, c.time, c.temperature)
@@ -123,17 +119,19 @@ def run(
             conds = sorted(series[key], key=sort_of)
             if len(conds) < 2:
                 continue
+            if config.COMPARE_OVER == "temperature" and len({c.temperature for c in conds}) < 2:
+                continue
             plot_comparison(
                 key, conds, _family_for(conds[0], samples, index),
                 base_folder, config.COMPARE_OVER,
             )
 
-    # --- overview ---
+    # --- Vue d'ensemble ---
     if config.MAKE_OVERVIEW:
         plot_overview(conditions, lambda c, i: _family_for(c, samples, i),
                       out_dir / "overview")
 
-    # --- summaries ---
+    # --- Rapports CSV & Run Info ---
     write_csvs(measurements, conditions, out_dir / "summary")
     write_run_info({
         "input_dir": str(in_dir),

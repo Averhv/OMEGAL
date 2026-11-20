@@ -231,12 +231,17 @@ def plot_individual(m: Measurement, shade: str, out_dir: Path) -> None:
 
 
 def plot_replicates(c: Condition, family: str, out_dir: Path) -> None:
+    """Trace les réplicats d'une condition donnée."""
     colours = shades(family, len(c.members))
-    curves = [
-        Curve(m.diameter, m.q, m.passant, legend_label(m), colours[i])
-        for i, m in enumerate(c.members)
-    ]
-    for kind in config.PLOT_KINDS:
+    curves = []
+    for i, m in enumerate(c.members):
+        lbl = legend_label(m)
+        if m.temperature and m.temperature not in lbl:
+            lbl = f"{lbl} [{m.temperature}]"
+        curves.append(Curve(m.diameter, m.q, m.passant, lbl, colours[i]))
+
+    kinds = getattr(config, "REPLICATES_PLOT_KINDS", ("q",))
+    for kind in kinds:
         render(
             curves, kind,
             f"{config.CUSTOM_TITLES.get(c.name, c.name)} — {_DESCR[kind]}",

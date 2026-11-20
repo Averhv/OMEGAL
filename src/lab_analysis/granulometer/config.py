@@ -23,7 +23,7 @@ SHOW_INLINE = "comparison"
 # "both"      : twin axes q (left) + cumulative (right)
 PLOT_KINDS = ("q",)
 
-MAKE_INDIVIDUAL = False
+MAKE_INDIVIDUAL = True
 MAKE_REPLICATES = True
 MAKE_COMPARISONS = True
 MAKE_OVERVIEW = True

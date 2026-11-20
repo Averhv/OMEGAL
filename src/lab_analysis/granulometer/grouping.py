@@ -1,4 +1,4 @@
-"""Group replicate measurements into conditions."""
+"""Group replicate measurements into experimental conditions."""
 from __future__ import annotations
 
 import string
@@ -7,14 +7,15 @@ from .models import Condition, Measurement
 from .parsing import parse_condition, split_replicate
 
 
-def _rep_sort_key(rep: str):
-    """Sort replicates naturally: 1, 2, 3, 10 before a, b, c."""
+def _rep_sort_key(rep: str) -> tuple[int, int, str]:
+    """Tri naturel des réplicats (ex: 1, 2, 3 avant a, b, c)."""
     if rep.isdigit():
         return (0, int(rep), "")
     return (1, 0, rep)
 
 
-def _temp_value(temp: str | None) -> float:
+def _temp_sort_key(temp: str | None) -> float:
+    """Convertit la température en float pour un tri numérique (None -> -1.0)."""
     if not temp:
         return -1.0
     try:
@@ -24,7 +25,7 @@ def _temp_value(temp: str | None) -> float:
 
 
 def organise(measurements: list[Measurement], sequential: set[str]) -> list[Condition]:
-    """Group replicates (by base name) into Conditions."""
+    """Regroupe les réplicats individuels en Conditions expérimentales."""
     groups: dict[str, list[Measurement]] = {}
     for m in measurements:
         base, letter, basis = split_replicate(m.name, fallback_basis=m.stats.get("basis"))
@@ -45,13 +46,19 @@ def organise(measurements: list[Measurement], sequential: set[str]) -> list[Cond
                     idx = sum(1 for x in members if x.replicate.startswith("rep"))
                     candidate = f"rep{idx + 1}"
                 m.replicate = candidate
-        members.sort(key=lambda m: _rep_sort_key(m.replicate))
 
+        members.sort(key=lambda m: _rep_sort_key(m.replicate))
         sample, vol, tim, temp = parse_condition(base)
-        for m in members:
+
+        seen_labels: set[str] = set()
+        for idx, m in enumerate(members, start=1):
             m.sample, m.volume, m.time, m.temperature = sample, vol, tim, temp
-            if len(members) > 1:
-                m.name = f"{base} {m.replicate}"
+            rep_tag = f"rep{m.replicate}" if m.replicate else f"rep{idx}"
+            candidate_name = f"{base} ({rep_tag})" if len(members) > 1 else base
+            if candidate_name in seen_labels:
+                candidate_name = f"{base} ({rep_tag}#{idx})"
+            seen_labels.add(candidate_name)
+            m.name = candidate_name
 
         conditions.append(Condition(base, members, sample, vol, tim, temp))
 
@@ -61,6 +68,6 @@ def organise(measurements: list[Measurement], sequential: set[str]) -> list[Cond
             c.sample.lower(),
             c.volume if c.volume is not None else 1e9,
             c.time if c.time is not None else 1e9,
-            _temp_value(c.temperature),
+            _temp_sort_key(c.temperature),
         ),
     )
